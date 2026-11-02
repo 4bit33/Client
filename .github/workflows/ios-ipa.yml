@@ -1,0 +1,64 @@
+# Builds an unsigned Pomme.ipa for iPhone/iPad on GitHub's macOS runners.
+# Sign and install it from Windows with Sideloadly or AltStore (free Apple ID).
+# Run it by hand: Actions → "iOS IPA (unsigned)" → Run workflow.
+name: iOS IPA (unsigned)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    runs-on: macos-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # pomme-singleplayer points into SteelMC, so the workspace needs it
+          # checked out even though iOS builds without singleplayer.
+          submodules: true
+
+      # Same setup as the project's own CI: Rust, cargo cache, just, Vulkan SDK
+      # (the host-side shader compiler reuses it instead of building shaderc).
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: ios
+
+      - name: iOS target and tools
+        run: |
+          # Installs the toolchain pinned in rust-toolchain.toml plus the iOS target.
+          rustup target add aarch64-apple-ios
+          brew install xcodegen cmake || true
+
+      - name: Generate Xcode project
+        working-directory: pomme-ios
+        run: xcodegen generate --quiet
+
+      - name: Build (no signing)
+        run: |
+          xcodebuild -quiet \
+            -project pomme-ios/Pomme.xcodeproj \
+            -scheme Pomme \
+            -sdk iphoneos \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            build
+
+      - name: Package .ipa
+        run: |
+          app=build/Build/Products/Release-iphoneos/Pomme.app
+          test -d "$app" || { echo "::error::Pomme.app not found"; find build -name "*.app"; exit 1; }
+          mkdir -p ipa/Payload
+          cp -R "$app" ipa/Payload/
+          (cd ipa && zip -qry ../Pomme-unsigned.ipa Payload)
+          ls -lh Pomme-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Pomme-unsigned-ipa
+          path: Pomme-unsigned.ipa
+          retention-days: 14
